@@ -1,0 +1,377 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Smart Plug Fit Checker V7</title>
+<style>
+:root{--bg:#111;--panel:#1b1b1b;--text:#eee;--muted:#aaa;--accent:#5aa7ff;--good:#55d17a;--warn:#ffc857}
+body{margin:0;font-family:system-ui,Segoe UI,Roboto,Arial,sans-serif;background:var(--bg);color:var(--text);overflow:hidden}
+header{padding:12px 16px;border-bottom:1px solid #333;display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+header h1{font-size:17px;margin:0 12px 0 0}
+button,input::file-selector-button,select{background:#2d2d2d;color:var(--text);border:1px solid #555;border-radius:10px;padding:10px 12px;cursor:pointer;min-height:42px;font-size:14px;touch-action:manipulation}
+button:hover{border-color:var(--accent)}
+button.primary{background:#164777;border-color:#2f83d2}
+button.success{background:#14552c;border-color:#2a9952}
+button.danger{border-color:#914444}
+.wrap{display:grid;grid-template-columns:360px 1fr;height:calc(100vh - 61px)}
+aside{background:var(--panel);border-right:1px solid #333;padding:14px;overflow:auto}
+main{position:relative;overflow:hidden}
+.group{border:1px solid #333;border-radius:10px;padding:12px;margin-bottom:12px}
+.group h2{font-size:14px;margin:0 0 8px}
+label{display:block;font-size:12px;color:var(--muted);margin:10px 0 4px}
+input[type=range],input[type=number],select{width:100%;box-sizing:border-box}
+input[type=number]{background:#111;color:var(--text);border:1px solid #444;border-radius:6px;padding:8px}
+.hint{font-size:12px;color:var(--muted);line-height:1.35}
+.status{font-size:12px;padding:8px;border-radius:8px;background:#101010;border:1px solid #333;white-space:pre-line}
+canvas{display:block;width:100%;height:100%;background:#0b0b0b;cursor:crosshair;touch-action:none}
+canvas.dragging{cursor:grabbing}
+.pill{display:inline-block;padding:2px 7px;border-radius:999px;background:#333;color:#ddd;font-size:11px;margin-right:4px}
+.row{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.stagebar{display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;margin-bottom:10px}
+.stagebar button.active{outline:2px solid var(--accent)}
+kbd{background:#333;border:1px solid #555;border-radius:4px;padding:1px 5px;font-size:11px}
+@media(max-width:850px){
+ header{padding:9px 10px;gap:5px}
+ header h1{font-size:15px;width:100%;margin:0}
+ .pill{font-size:10px}
+ .wrap{grid-template-columns:1fr;grid-template-rows:auto 1fr;height:calc(100vh - 76px)}
+ aside{border-right:0;border-bottom:1px solid #333;max-height:42vh;padding:10px}
+ main{height:58vh}
+ .group{padding:10px;margin-bottom:8px}
+ .row{grid-template-columns:1fr}
+ button,select,input::file-selector-button{min-height:44px}
+}
+</style>
+</head>
+<body>
+<header>
+<h1>Smart Plug Fit Checker V7</h1>
+<span class="pill">Manual only</span>
+<span class="pill">Separate calibration views</span>
+<span class="pill">No live scaling while clicking</span>
+<span class="pill">Second plug hidden until aligned</span>
+<button id="resetView">Reset view</button>
+<button id="clearAll" class="danger">Clear</button>
+</header>
+
+<div class="wrap">
+<aside>
+<div class="stagebar">
+<button id="stageLead" class="active">1 Socket</button>
+<button id="stagePlug">2 Plug</button>
+<button id="stageCheck">3 Check</button>
+</div>
+
+<div class="group">
+<h2>Load photos</h2>
+<label>Extension lead photo</label><input id="leadFile" type="file" accept="image/*">
+<label>Smart plug photo</label><input id="plugFile" type="file" accept="image/*">
+<p class="hint">Use straight-on photos. This version removes auto-detect because it was likely to create false confidence.</p>
+</div>
+
+<div id="leadControls" class="group">
+<h2>Socket calibration</h2>
+<button id="calLead1" class="primary">Set socket 1 points</button>
+<button id="calLead2" class="primary">Set socket 2 points</button>
+<button id="undoLead">Undo socket point</button>
+<p class="hint">This view only shows the extension photo. Green = socket 1. Yellow = socket 2.</p>
+</div>
+
+<div id="plugControls" class="group" style="display:none">
+<h2>Plug calibration</h2>
+<button id="calPlug" class="primary">Set plug pin points</button>
+<button id="undoPlug">Undo plug point</button>
+<p class="hint">This view only shows the plug photo. No scaling happens until all points are placed.</p>
+</div>
+
+<div id="checkControls" class="group" style="display:none">
+<h2>Fit check</h2>
+<label>Anchor point</label>
+<select id="anchorPoint">
+<option value="earth">Earth / top pin</option>
+<option value="live">Live / right lower pin</option>
+<option value="neutral">Neutral / left lower pin</option>
+<option value="centroid">Centre of 3 points</option>
+</select>
+<div class="row" style="margin-top:8px">
+<button id="alignPlug1" class="success">Align plug 1</button>
+<button id="alignPlug2" class="success">Align plug 2</button>
+</div>
+<button id="alignBoth" class="success" style="margin-top:8px;width:100%">Align both plugs</button>
+<label>Selected plug</label>
+<select id="selectedPlug"><option value="0">Plug 1</option><option value="1">Plug 2</option></select>
+<label>Overlay opacity</label><input id="opacity" type="range" min="0.05" max="1" step="0.01" value="0.65">
+<label>Fine scale adjustment (%)</label><input id="fineScale" type="number" min="50" max="150" step="0.5" value="100">
+<button id="applyScale">Apply scale adjustment</button>
+<p class="hint">Plug 2 appears only after you align it, so you won't accidentally calibrate against the wrong duplicate.</p>
+</div>
+
+<div class="group">
+<h2>Navigation</h2>
+<button id="togglePts">Show/hide points</button>
+<button id="fitView">Fit image to screen</button>
+<button id="mobileHelp">Controls</button>
+<div id="status" class="status">Load photos, then start with socket calibration.</div>
+</div>
+</aside>
+
+<main><canvas id="canvas"></canvas></main>
+</div>
+
+<script>
+const canvas=document.getElementById('canvas'),ctx=canvas.getContext('2d');
+const state={
+ stage:'lead',
+ leadImg:null,plugImg:null,
+ leadPts:[],lead2Pts:[],plugPts:[],
+ mode:null,showPts:true,
+ view:{x:0,y:0,scale:1},
+ overlays:[
+  {x:250,y:160,rotation:0,opacity:.65,scale:1,baseScale:null,visible:true,aligned:false},
+  {x:450,y:160,rotation:0,opacity:.65,scale:1,baseScale:null,visible:false,aligned:false}
+ ],
+ selected:0,draggingOverlay:false,panning:false,draggingPoint:null,last:{x:0,y:0},spaceDown:false,cursor:{x:0,y:0},
+ touch:{active:false,lastDist:0,lastMid:null,mode:null}
+};
+
+function $(id){return document.getElementById(id)}
+function msg(t){$('status').textContent=t}
+function loadImage(file,cb){if(!file)return;const img=new Image();img.onload=()=>cb(img);img.src=URL.createObjectURL(file)}
+
+$('leadFile').onchange=e=>loadImage(e.target.files[0],img=>{state.leadImg=img;setStage('lead');resetView();draw()});
+$('plugFile').onchange=e=>loadImage(e.target.files[0],img=>{state.plugImg=img;setStage('plug');resetView();draw()});
+
+$('stageLead').onclick=()=>setStage('lead');
+$('stagePlug').onclick=()=>setStage('plug');
+$('stageCheck').onclick=()=>setStage('check');
+
+function setStage(stage){
+ state.stage=stage;state.mode=null;
+ $('stageLead').classList.toggle('active',stage==='lead');
+ $('stagePlug').classList.toggle('active',stage==='plug');
+ $('stageCheck').classList.toggle('active',stage==='check');
+ $('leadControls').style.display=stage==='lead'?'block':'none';
+ $('plugControls').style.display=stage==='plug'?'block':'none';
+ $('checkControls').style.display=stage==='check'?'block':'none';
+ resetView();
+ if(stage==='lead')msg('Socket calibration view. Add socket 1 and socket 2 points.');
+ if(stage==='plug')msg('Plug calibration view. Add the 3 plug pin points.');
+ if(stage==='check')msg('Fit check view. Align plug 1, plug 2, or both.');
+ draw();
+}
+
+$('calLead1').onclick=()=>{state.mode='lead1';state.leadPts=[];msg('Click 3 holes for socket 1. No scaling will happen while adding points.');draw()};
+$('calLead2').onclick=()=>{state.mode='lead2';state.lead2Pts=[];msg('Click 3 holes for socket 2.');draw()};
+$('calPlug').onclick=()=>{state.mode='plug';state.plugPts=[];msg('Click 3 plug pins. No scaling will happen while adding points.');draw()};
+$('undoLead').onclick=()=>undoStagePoint('lead');
+$('undoPlug').onclick=()=>undoStagePoint('plug');
+
+$('alignPlug1').onclick=()=>alignPlugToSocket(0,state.leadPts,true);
+$('alignPlug2').onclick=()=>alignPlugToSocket(1,state.lead2Pts,true);
+$('alignBoth').onclick=()=>{alignPlugToSocket(0,state.leadPts,false);alignPlugToSocket(1,state.lead2Pts,false);msg('Aligned both plugs. Plug 2 is now visible. Check visually for clash.');draw()};
+$('selectedPlug').onchange=e=>{state.selected=+e.target.value;$('opacity').value=state.overlays[state.selected].opacity;draw()};
+$('opacity').oninput=e=>{state.overlays[state.selected].opacity=+e.target.value;draw()};
+$('fineScale').oninput=e=>{applyScale(0);applyScale(1);draw()};
+$('applyScale').onclick=()=>{applyScale(0);applyScale(1);draw()};
+$('togglePts').onclick=()=>{state.showPts=!state.showPts;draw()};
+$('fitView').onclick=()=>{resetView();draw()};
+$('resetView').onclick=()=>{resetView();draw()};
+$('clearAll').onclick=()=>{state.leadPts=[];state.lead2Pts=[];state.plugPts=[];state.mode=null;state.overlays[0].visible=true;state.overlays[1].visible=false;state.overlays.forEach(o=>{o.aligned=false;o.baseScale=null;o.scale=1;o.rotation=0});msg('Cleared points and overlays. Photos kept loaded.');draw()};
+$('mobileHelp').onclick=()=>alert('Controls:\\n\\nDesktop:\\n• Mouse wheel: zoom\\n• Right-click drag or Space + drag: pan\\n• Drag points to correct them\\n• Drag selected plug in Check view\\n\\nMobile:\\n• 1 finger: place/move point or move selected plug\\n• 2 fingers: pan and pinch zoom');
+
+function resize(){const r=canvas.parentElement.getBoundingClientRect();canvas.width=Math.max(600,Math.floor(r.width*devicePixelRatio));canvas.height=Math.max(400,Math.floor(r.height*devicePixelRatio));draw()}
+window.onresize=resize;resize();
+
+function activeImage(){
+ if(state.stage==='lead'||state.stage==='check')return state.leadImg;
+ if(state.stage==='plug')return state.plugImg;
+ return null;
+}
+function resetView(){
+ const img=activeImage();if(!img){state.view={x:0,y:0,scale:1};return}
+ const w=canvas.width/devicePixelRatio,h=canvas.height/devicePixelRatio,s=Math.min(w/img.width,h/img.height)*.92;
+ state.view.scale=s;state.view.x=(w-img.width*s)/2;state.view.y=(h-img.height*s)/2;
+ if(state.stage==='plug'&&state.plugImg){state.overlays[0].x=state.plugImg.width/2;state.overlays[0].y=state.plugImg.height/2}
+}
+function screenToWorld(sx,sy){const r=canvas.getBoundingClientRect(),x=sx-r.left,y=sy-r.top;return{x:(x-state.view.x)/state.view.scale,y:(y-state.view.y)/state.view.scale}}
+function worldToScreen(p){return{x:p.x*state.view.scale+state.view.x,y:p.y*state.view.scale+state.view.y}}
+function dist(a,b){return Math.hypot(a.x-b.x,a.y-b.y)}
+function angle(a,b){return Math.atan2(b.y-a.y,b.x-a.x)}
+function centroid(pts){return{x:(pts[0].x+pts[1].x+pts[2].x)/3,y:(pts[0].y+pts[1].y+pts[2].y)/3}}
+function pairDistances(pts){return[dist(pts[0],pts[1]),dist(pts[1],pts[2]),dist(pts[0],pts[2])].sort((a,b)=>a-b)}
+function canonicalPins(pts){
+ if(!pts||pts.length!==3)return null;
+ const pairs=[{a:0,b:1,d:dist(pts[0],pts[1])},{a:1,b:2,d:dist(pts[1],pts[2])},{a:0,b:2,d:dist(pts[0],pts[2])}].sort((p,q)=>p.d-q.d);
+ const shortest=pairs[0],earthIndex=[0,1,2].find(i=>i!==shortest.a&&i!==shortest.b),lower=[shortest.a,shortest.b];
+ const earth=pts[earthIndex],c=centroid(pts),down={x:c.x-earth.x,y:c.y-earth.y};
+ function sideScore(p){const v={x:p.x-earth.x,y:p.y-earth.y};return down.x*v.y-down.y*v.x}
+ const pA=pts[lower[0]],pB=pts[lower[1]];
+ let neutral,live;if(sideScore(pA)>sideScore(pB)){live=pA;neutral=pB}else{live=pB;neutral=pA}
+ return{earth,live,neutral,centroid:c}
+}
+function calibrationScale(socketPts){
+ if(socketPts.length!==3||state.plugPts.length!==3)return null;
+ const ld=pairDistances(socketPts),pd=pairDistances(state.plugPts),leadAvg=(ld[0]+ld[1]+ld[2])/3,plugAvg=(pd[0]+pd[1]+pd[2])/3;
+ return{scale:leadAvg/plugAvg,leadAvg,plugAvg}
+}
+function applyScale(i){const fine=(+$('fineScale').value||100)/100,o=state.overlays[i];o.scale=(o.baseScale||1)*fine}
+function alignPlugToSocket(i,socketPts,show=true){
+ if(state.stage!=='check')setStage('check');
+ if(!state.leadImg||!state.plugImg){msg('Load both photos first.');return}
+ if(socketPts.length!==3||state.plugPts.length!==3){msg('Need 3 socket points and 3 plug points first.');return}
+ const sock=canonicalPins(socketPts),plug=canonicalPins(state.plugPts),sc=calibrationScale(socketPts);
+ if(!sock||!plug||!sc||!isFinite(sc.scale)){msg('Could not align. Check point placement.');return}
+ const ov=state.overlays[i];ov.baseScale=sc.scale;applyScale(i);
+ ov.rotation=angle(sock.neutral,sock.live)-angle(plug.neutral,plug.live);
+ const anchor=$('anchorPoint').value,sA=sock[anchor],pA=plug[anchor];
+ const local={x:(pA.x-state.plugImg.width/2)*ov.scale,y:(pA.y-state.plugImg.height/2)*ov.scale},c=Math.cos(ov.rotation),s=Math.sin(ov.rotation);
+ const rot={x:local.x*c-local.y*s,y:local.x*s+local.y*c};
+ ov.x=sA.x-rot.x;ov.y=sA.y-rot.y;ov.visible=true;ov.aligned=true;
+ if(show){msg(`Aligned plug ${i+1}. Scale ${(ov.scale*100).toFixed(1)}%. Plug ${i+1} is now visible.`);draw()}
+}
+
+function afterPointAdded(){
+ const arr=state.mode==='lead1'?state.leadPts:state.mode==='lead2'?state.lead2Pts:state.plugPts;
+ if(arr.length>=3){
+  const label=state.mode==='lead1'?'Socket 1':state.mode==='lead2'?'Socket 2':'Plug';
+  state.mode=null;
+  msg(`${label} points captured.\nSocket 1: ${state.leadPts.length}/3\nSocket 2: ${state.lead2Pts.length}/3\nPlug: ${state.plugPts.length}/3\n\nNo scale/alignment applied yet.`);
+ }else msg(`Clicked ${arr.length}/3. Click ${3-arr.length} more.`);
+ draw();
+}
+function undoStagePoint(stage){
+ if(stage==='lead'){
+  if(state.mode==='lead1'&&state.leadPts.length)state.leadPts.pop();
+  else if(state.mode==='lead2'&&state.lead2Pts.length)state.lead2Pts.pop();
+  else if(state.lead2Pts.length)state.lead2Pts.pop();
+  else if(state.leadPts.length)state.leadPts.pop();
+ }else{
+  if(state.plugPts.length)state.plugPts.pop();
+ }
+ msg(`Socket 1: ${state.leadPts.length}/3\nSocket 2: ${state.lead2Pts.length}/3\nPlug: ${state.plugPts.length}/3`);
+ draw();
+}
+
+function plugLocalToWorld(p,ov){
+ const lx=(p.x-state.plugImg.width/2)*ov.scale,ly=(p.y-state.plugImg.height/2)*ov.scale,c=Math.cos(ov.rotation),s=Math.sin(ov.rotation);
+ return{x:ov.x+lx*c-ly*s,y:ov.y+lx*s+ly*c}
+}
+function worldToPlugLocal(p,ov){
+ // In plug calibration stage, points are on the plug image directly.
+ if(state.stage==='plug')return{x:p.x,y:p.y};
+ const dx=p.x-ov.x,dy=p.y-ov.y,c=Math.cos(-ov.rotation),s=Math.sin(-ov.rotation),rx=dx*c-dy*s,ry=dx*s+dy*c;
+ return{x:rx/ov.scale+state.plugImg.width/2,y:ry/ov.scale+state.plugImg.height/2}
+}
+
+function visiblePoints(){
+ if(!state.showPts)return[];
+ const pts=[];
+ if(state.stage==='lead'||state.stage==='check'){
+  state.leadPts.forEach((p,i)=>pts.push({type:'lead1',index:i,world:p}));
+  state.lead2Pts.forEach((p,i)=>pts.push({type:'lead2',index:i,world:p}));
+ }
+ if(state.stage==='plug'){
+  state.plugPts.forEach((p,i)=>pts.push({type:'plug',index:i,world:p}));
+ }
+ return pts;
+}
+function hitPoint(clientX,clientY){
+ const r=canvas.getBoundingClientRect(),sx=clientX-r.left,sy=clientY-r.top;
+ for(const item of visiblePoints()){const sp=worldToScreen(item.world);if(Math.hypot(sp.x-sx,sp.y-sy)<=22)return item}
+ return null;
+}
+function pointerDown(clientX,clientY,button=0){
+ const world=screenToWorld(clientX,clientY);state.last={x:clientX,y:clientY};state.cursor={x:clientX,y:clientY};
+ if(button===2||state.spaceDown){state.panning=true;return}
+ const hit=hitPoint(clientX,clientY);if(hit){state.draggingPoint=hit;canvas.classList.add('dragging');return}
+ if(state.mode==='lead1'){state.leadPts.push(world);afterPointAdded();return}
+ if(state.mode==='lead2'){state.lead2Pts.push(world);afterPointAdded();return}
+ if(state.mode==='plug'){state.plugPts.push(world);afterPointAdded();return}
+ if(state.stage==='check'&&state.plugImg){state.draggingOverlay=true;canvas.classList.add('dragging')}
+}
+function pointerMove(clientX,clientY){
+ const dx=clientX-state.last.x,dy=clientY-state.last.y;state.last={x:clientX,y:clientY};state.cursor={x:clientX,y:clientY};
+ if(state.draggingPoint){
+  const world=screenToWorld(clientX,clientY);
+  if(state.draggingPoint.type==='lead1')state.leadPts[state.draggingPoint.index]=world;
+  if(state.draggingPoint.type==='lead2')state.lead2Pts[state.draggingPoint.index]=world;
+  if(state.draggingPoint.type==='plug')state.plugPts[state.draggingPoint.index]=world;
+  draw();return;
+ }
+ if(state.draggingOverlay&&state.stage==='check'){
+  const o=state.overlays[state.selected];if(o.visible){o.x+=dx/state.view.scale;o.y+=dy/state.view.scale}
+  draw();return;
+ }
+ if(state.panning){state.view.x+=dx;state.view.y+=dy;draw();return}
+ draw();
+}
+function pointerUp(){state.draggingOverlay=false;state.panning=false;state.draggingPoint=null;canvas.classList.remove('dragging')}
+canvas.onmousedown=e=>pointerDown(e.clientX,e.clientY,e.button);
+canvas.onmousemove=e=>pointerMove(e.clientX,e.clientY);
+window.onmouseup=pointerUp;
+canvas.oncontextmenu=e=>e.preventDefault();
+
+function zoomAt(clientX,clientY,factor){
+ const r=canvas.getBoundingClientRect(),mx=clientX-r.left,my=clientY-r.top,before=screenToWorld(clientX,clientY);
+ state.view.scale=Math.min(50,Math.max(.02,state.view.scale*factor));
+ state.view.x=mx-before.x*state.view.scale;state.view.y=my-before.y*state.view.scale;
+}
+canvas.addEventListener('wheel',e=>{e.preventDefault();zoomAt(e.clientX,e.clientY,e.deltaY<0?1.12:.892857);draw()},{passive:false});
+canvas.ondblclick=e=>{zoomAt(e.clientX,e.clientY,1.8);draw()};
+window.onkeydown=e=>{if(e.code==='Space'){state.spaceDown=true;e.preventDefault()}if(e.key==='Escape'){state.mode=null;msg('Point entry cancelled.');draw()}};
+window.onkeyup=e=>{if(e.code==='Space')state.spaceDown=false};
+
+function touchMid(touches){const a=touches[0],b=touches[1];return{x:(a.clientX+b.clientX)/2,y:(a.clientY+b.clientY)/2}}
+function touchDist(touches){const a=touches[0],b=touches[1];return Math.hypot(a.clientX-b.clientX,a.clientY-b.clientY)}
+canvas.addEventListener('touchstart',e=>{
+ e.preventDefault();
+ if(e.touches.length===1){const t=e.touches[0];pointerDown(t.clientX,t.clientY,0)}
+ if(e.touches.length===2){state.draggingOverlay=false;state.draggingPoint=null;state.touch.mode='pinch';state.touch.lastDist=touchDist(e.touches);state.touch.lastMid=touchMid(e.touches)}
+},{passive:false});
+canvas.addEventListener('touchmove',e=>{
+ e.preventDefault();
+ if(e.touches.length===1&&state.touch.mode!=='pinch'){const t=e.touches[0];pointerMove(t.clientX,t.clientY)}
+ if(e.touches.length===2){
+  const mid=touchMid(e.touches),d=touchDist(e.touches);
+  if(state.touch.lastMid){state.view.x+=mid.x-state.touch.lastMid.x;state.view.y+=mid.y-state.touch.lastMid.y}
+  if(state.touch.lastDist)zoomAt(mid.x,mid.y,d/state.touch.lastDist);
+  state.touch.lastMid=mid;state.touch.lastDist=d;draw();
+ }
+},{passive:false});
+canvas.addEventListener('touchend',e=>{e.preventDefault();if(e.touches.length===0){state.touch.mode=null;state.touch.lastDist=0;state.touch.lastMid=null;pointerUp()}},{passive:false});
+
+function drawPoints(pts,colour,label){
+ ctx.save();ctx.lineWidth=Math.max(1,2/state.view.scale);
+ pts.forEach((p,i)=>{ctx.beginPath();ctx.fillStyle=colour;ctx.strokeStyle='#000';ctx.arc(p.x,p.y,Math.max(5/state.view.scale,3),0,Math.PI*2);ctx.fill();ctx.stroke();ctx.font=`${Math.max(10/state.view.scale,10)}px system-ui`;ctx.fillStyle='#fff';ctx.strokeStyle='#000';ctx.lineWidth=Math.max(1,3/state.view.scale);ctx.strokeText(`${label}${i+1}`,p.x+8/state.view.scale,p.y-8/state.view.scale);ctx.fillText(`${label}${i+1}`,p.x+8/state.view.scale,p.y-8/state.view.scale)});
+ ctx.restore();
+}
+function drawMagnifier(){
+ if(!state.mode)return;const r=canvas.getBoundingClientRect(),sx=state.cursor.x-r.left,sy=state.cursor.y-r.top;if(sx<0||sy<0||sx>r.width||sy>r.height)return;
+ const size=150,zoom=3,x=Math.min(r.width-size-12,sx+18),y=Math.min(r.height-size-12,sy+18);
+ ctx.save();ctx.beginPath();ctx.rect(x,y,size,size);ctx.clip();ctx.fillStyle='#000';ctx.fillRect(x,y,size,size);ctx.translate(x+size/2,y+size/2);ctx.scale(zoom,zoom);ctx.translate(-sx,-sy);ctx.drawImage(canvas,0,0,r.width,r.height);ctx.restore();
+ ctx.save();ctx.strokeStyle='#5aa7ff';ctx.lineWidth=2;ctx.strokeRect(x,y,size,size);ctx.beginPath();ctx.moveTo(x+size/2-10,y+size/2);ctx.lineTo(x+size/2+10,y+size/2);ctx.moveTo(x+size/2,y+size/2-10);ctx.lineTo(x+size/2,y+size/2+10);ctx.stroke();ctx.restore();
+}
+function draw(){
+ const w=canvas.width/devicePixelRatio,h=canvas.height/devicePixelRatio;ctx.setTransform(devicePixelRatio,0,0,devicePixelRatio,0,0);ctx.clearRect(0,0,w,h);ctx.fillStyle='#0b0b0b';ctx.fillRect(0,0,w,h);
+ ctx.save();ctx.translate(state.view.x,state.view.y);ctx.scale(state.view.scale,state.view.scale);
+ if(state.stage==='lead'){
+  if(state.leadImg)ctx.drawImage(state.leadImg,0,0);
+  if(state.showPts){if(state.leadPts.length)drawPoints(state.leadPts,'#55d17a','S1-');if(state.lead2Pts.length)drawPoints(state.lead2Pts,'#ffc857','S2-')}
+ }
+ if(state.stage==='plug'){
+  if(state.plugImg)ctx.drawImage(state.plugImg,0,0);
+  if(state.showPts&&state.plugPts.length)drawPoints(state.plugPts,'#5aa7ff','P-');
+ }
+ if(state.stage==='check'){
+  if(state.leadImg)ctx.drawImage(state.leadImg,0,0);
+  if(state.plugImg)state.overlays.forEach((o,i)=>{if(!o.visible)return;ctx.save();ctx.globalAlpha=o.opacity;ctx.translate(o.x,o.y);ctx.rotate(o.rotation);ctx.scale(o.scale,o.scale);ctx.drawImage(state.plugImg,-state.plugImg.width/2,-state.plugImg.height/2);ctx.restore()});
+  if(state.showPts){if(state.leadPts.length)drawPoints(state.leadPts,'#55d17a','S1-');if(state.lead2Pts.length)drawPoints(state.lead2Pts,'#ffc857','S2-')}
+ }
+ ctx.restore();
+ if(!activeImage()){ctx.fillStyle='#aaa';ctx.font='16px system-ui';ctx.fillText('Load the relevant photo for this stage.',24,36)}
+ if(state.mode){ctx.fillStyle='rgba(0,0,0,.72)';ctx.fillRect(14,14,430,34);ctx.fillStyle='#fff';ctx.font='13px system-ui';ctx.fillText(`Adding points: ${state.mode} | wheel/pinch zoom | drag points to correct | Esc cancel`,24,36);drawMagnifier()}
+}
+</script>
+</body>
+</html>

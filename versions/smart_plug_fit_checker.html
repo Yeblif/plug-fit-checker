@@ -1,0 +1,306 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Smart Plug Fit Checker</title>
+<style>
+  :root { --bg:#111; --panel:#1b1b1b; --text:#eee; --muted:#aaa; --accent:#5aa7ff; --bad:#ff5a5a; --good:#55d17a; }
+  body { margin:0; font-family:system-ui,Segoe UI,Roboto,Arial,sans-serif; background:var(--bg); color:var(--text); }
+  header { padding:14px 18px; border-bottom:1px solid #333; display:flex; gap:12px; align-items:center; flex-wrap:wrap; }
+  header h1 { font-size:18px; margin:0 12px 0 0; }
+  button, input::file-selector-button {
+    background:#2d2d2d; color:var(--text); border:1px solid #555; border-radius:8px; padding:8px 10px; cursor:pointer;
+  }
+  button:hover { border-color:var(--accent); }
+  button.primary { background:#164777; border-color:#2f83d2; }
+  button.danger { border-color:#914444; }
+  .wrap { display:grid; grid-template-columns:320px 1fr; min-height:calc(100vh - 64px); }
+  aside { background:var(--panel); border-right:1px solid #333; padding:14px; overflow:auto; }
+  main { position:relative; overflow:hidden; }
+  .group { border:1px solid #333; border-radius:10px; padding:12px; margin-bottom:12px; }
+  .group h2 { font-size:14px; margin:0 0 8px; }
+  label { display:block; font-size:12px; color:var(--muted); margin:10px 0 4px; }
+  input[type=range], input[type=number] { width:100%; }
+  input[type=number] { box-sizing:border-box; background:#111; color:var(--text); border:1px solid #444; border-radius:6px; padding:6px; }
+  .hint { font-size:12px; color:var(--muted); line-height:1.35; }
+  .status { font-size:12px; padding:8px; border-radius:8px; background:#101010; border:1px solid #333; white-space:pre-line; }
+  canvas { display:block; width:100%; height:100%; background:#0b0b0b; cursor:grab; }
+  canvas.dragging { cursor:grabbing; }
+  .pill { display:inline-block; padding:2px 7px; border-radius:999px; background:#333; color:#ddd; font-size:11px; margin-right:4px; }
+  @media (max-width:850px){ .wrap{grid-template-columns:1fr;} aside{border-right:0;border-bottom:1px solid #333;} main{height:65vh;} }
+</style>
+</head>
+<body>
+<header>
+  <h1>Smart Plug Fit Checker</h1>
+  <span class="pill">Manual calibration</span>
+  <span class="pill">UK BS 1363 reference</span>
+  <button id="resetView">Reset view</button>
+  <button id="clearAll" class="danger">Clear</button>
+</header>
+
+<div class="wrap">
+<aside>
+  <div class="group">
+    <h2>1. Load photos</h2>
+    <label>Extension lead photo</label>
+    <input id="leadFile" type="file" accept="image/*">
+    <label>Smart plug photo</label>
+    <input id="plugFile" type="file" accept="image/*">
+    <p class="hint">Use straight-on photos where possible. Perspective is the main source of error.</p>
+  </div>
+
+  <div class="group">
+    <h2>2. Calibrate scale</h2>
+    <button id="calLead" class="primary">Click 3 socket holes on extension</button>
+    <button id="calPlug" class="primary">Click 3 plug pins on smart plug</button>
+    <p class="hint">Click the same three BS 1363 points on both images: earth, live, neutral. Exact order does not matter.</p>
+    <div id="calStatus" class="status">No calibration yet.</div>
+  </div>
+
+  <div class="group">
+    <h2>3. Overlay controls</h2>
+    <label>Overlay opacity</label>
+    <input id="opacity" type="range" min="0.05" max="1" step="0.01" value="0.65">
+    <label>Rotation</label>
+    <input id="rotation" type="range" min="-180" max="180" step="0.5" value="0">
+    <label>Fine scale adjustment (%)</label>
+    <input id="fineScale" type="number" min="50" max="150" step="0.5" value="100">
+    <button id="snapScale">Apply calibrated scale</button>
+    <p class="hint">Drag the smart plug overlay into position. Mouse wheel zooms the view. Right-click drag pans.</p>
+  </div>
+
+  <div class="group">
+    <h2>4. Useful extras</h2>
+    <button id="toggleLeadPts">Show/hide lead calibration points</button>
+    <button id="togglePlugPts">Show/hide plug calibration points</button>
+    <button id="centerPlug">Centre plug overlay</button>
+    <p class="hint">This tool does not automatically prove clearance; it gives you a scale-correct visual check.</p>
+  </div>
+</aside>
+
+<main>
+  <canvas id="canvas"></canvas>
+</main>
+</div>
+
+<script>
+const canvas = document.getElementById('canvas');
+const ctx = canvas.getContext('2d');
+
+const state = {
+  leadImg:null, plugImg:null,
+  leadPts:[], plugPts:[],
+  mode:null,
+  showLeadPts:true, showPlugPts:true,
+  view:{x:0,y:0,scale:1},
+  overlay:{x:250,y:160,rotation:0,opacity:0.65,scale:1,baseScale:null},
+  dragging:false, panning:false, last:{x:0,y:0}
+};
+
+const UK_PIN_GEOM = {
+  // Approx relative coordinates in mm using earth at top and L/N below.
+  // Horizontal L-N spacing approx 22.2mm, vertical earth-to-line approx 22.2mm.
+  earth:{x:0,y:-22.2},
+  neutral:{x:-11.1,y:0},
+  live:{x:11.1,y:0}
+};
+
+function loadImage(file, cb){
+  if(!file) return;
+  const img = new Image();
+  img.onload = () => cb(img);
+  img.src = URL.createObjectURL(file);
+}
+
+document.getElementById('leadFile').addEventListener('change', e => {
+  loadImage(e.target.files[0], img => { state.leadImg = img; resetView(); draw(); });
+});
+document.getElementById('plugFile').addEventListener('change', e => {
+  loadImage(e.target.files[0], img => { state.plugImg = img; draw(); });
+});
+
+document.getElementById('calLead').onclick = () => { state.mode='lead'; state.leadPts=[]; updateStatus('Click 3 socket holes on the extension lead.'); };
+document.getElementById('calPlug').onclick = () => { state.mode='plug'; state.plugPts=[]; updateStatus('Click 3 plug pins on the smart plug.'); };
+document.getElementById('opacity').oninput = e => { state.overlay.opacity = +e.target.value; draw(); };
+document.getElementById('rotation').oninput = e => { state.overlay.rotation = (+e.target.value) * Math.PI/180; draw(); };
+document.getElementById('fineScale').oninput = e => { applyScale(); draw(); };
+document.getElementById('snapScale').onclick = () => { document.getElementById('fineScale').value=100; applyCalibratedScale(); draw(); };
+document.getElementById('toggleLeadPts').onclick = () => { state.showLeadPts = !state.showLeadPts; draw(); };
+document.getElementById('togglePlugPts').onclick = () => { state.showPlugPts = !state.showPlugPts; draw(); };
+document.getElementById('centerPlug').onclick = () => { state.overlay.x = canvas.width/2/state.view.scale - state.view.x/state.view.scale; state.overlay.y = canvas.height/2/state.view.scale - state.view.y/state.view.scale; draw(); };
+document.getElementById('resetView').onclick = () => { resetView(); draw(); };
+document.getElementById('clearAll').onclick = () => { Object.assign(state,{leadImg:null,plugImg:null,leadPts:[],plugPts:[],mode:null}); state.overlay.baseScale=null; updateStatus('Cleared.'); draw(); };
+
+function resize(){
+  const r = canvas.parentElement.getBoundingClientRect();
+  canvas.width = Math.max(600, Math.floor(r.width * devicePixelRatio));
+  canvas.height = Math.max(400, Math.floor(r.height * devicePixelRatio));
+  ctx.setTransform(devicePixelRatio,0,0,devicePixelRatio,0,0);
+  draw();
+}
+window.addEventListener('resize', resize);
+resize();
+
+function resetView(){
+  if(!state.leadImg) { state.view={x:0,y:0,scale:1}; return; }
+  const w = canvas.width / devicePixelRatio, h = canvas.height / devicePixelRatio;
+  const s = Math.min(w/state.leadImg.width, h/state.leadImg.height) * 0.92;
+  state.view.scale = s;
+  state.view.x = (w - state.leadImg.width*s)/2;
+  state.view.y = (h - state.leadImg.height*s)/2;
+}
+
+function screenToWorld(sx,sy){
+  const rect = canvas.getBoundingClientRect();
+  const x = sx - rect.left, y = sy - rect.top;
+  return {x:(x-state.view.x)/state.view.scale, y:(y-state.view.y)/state.view.scale};
+}
+
+canvas.addEventListener('mousedown', e => {
+  const p = screenToWorld(e.clientX,e.clientY);
+  state.last = {x:e.clientX,y:e.clientY};
+
+  if(state.mode){
+    const arr = state.mode==='lead' ? state.leadPts : state.plugPts;
+    arr.push(p);
+    if(arr.length >= 3){
+      state.mode=null;
+      calculateCalibration();
+    } else {
+      updateStatus(`Clicked ${arr.length}/3. Click ${3-arr.length} more.`);
+    }
+    draw();
+    return;
+  }
+
+  if(e.button === 2 || e.ctrlKey) {
+    state.panning = true;
+  } else {
+    state.dragging = true;
+    canvas.classList.add('dragging');
+  }
+});
+
+canvas.addEventListener('mousemove', e => {
+  const dx = (e.clientX - state.last.x);
+  const dy = (e.clientY - state.last.y);
+  state.last = {x:e.clientX,y:e.clientY};
+  if(state.dragging){
+    state.overlay.x += dx/state.view.scale;
+    state.overlay.y += dy/state.view.scale;
+    draw();
+  }
+  if(state.panning){
+    state.view.x += dx;
+    state.view.y += dy;
+    draw();
+  }
+});
+window.addEventListener('mouseup', () => { state.dragging=false; state.panning=false; canvas.classList.remove('dragging'); });
+canvas.addEventListener('contextmenu', e => e.preventDefault());
+
+canvas.addEventListener('wheel', e => {
+  e.preventDefault();
+  const rect = canvas.getBoundingClientRect();
+  const mx = e.clientX - rect.left, my = e.clientY - rect.top;
+  const before = screenToWorld(e.clientX,e.clientY);
+  const factor = e.deltaY < 0 ? 1.08 : 0.925;
+  state.view.scale *= factor;
+  state.view.x = mx - before.x*state.view.scale;
+  state.view.y = my - before.y*state.view.scale;
+  draw();
+},{passive:false});
+
+function pairDistances(pts){
+  return [
+    dist(pts[0],pts[1]),
+    dist(pts[1],pts[2]),
+    dist(pts[0],pts[2])
+  ].sort((a,b)=>a-b);
+}
+function dist(a,b){ return Math.hypot(a.x-b.x,a.y-b.y); }
+
+function calculateCalibration(){
+  if(state.leadPts.length===3 && state.plugPts.length===3){
+    const ld = pairDistances(state.leadPts);
+    const pd = pairDistances(state.plugPts);
+    const leadAvg = (ld[0]+ld[1]+ld[2])/3;
+    const plugAvg = (pd[0]+pd[1]+pd[2])/3;
+    state.overlay.baseScale = leadAvg / plugAvg;
+    applyCalibratedScale();
+    updateStatus(`Calibrated.
+Extension reference: ${leadAvg.toFixed(1)} px average spacing
+Plug reference: ${plugAvg.toFixed(1)} px average spacing
+Overlay scale: ${(state.overlay.baseScale*100).toFixed(1)}% before fine adjustment`);
+  } else {
+    updateStatus(`Lead points: ${state.leadPts.length}/3
+Plug points: ${state.plugPts.length}/3`);
+  }
+}
+function applyCalibratedScale(){
+  state.overlay.scale = state.overlay.baseScale || 1;
+  applyScale();
+}
+function applyScale(){
+  const fine = (+document.getElementById('fineScale').value || 100)/100;
+  state.overlay.scale = (state.overlay.baseScale || 1) * fine;
+}
+
+function updateStatus(t){ document.getElementById('calStatus').textContent = t; }
+
+function drawPoints(pts, colour){
+  ctx.save();
+  ctx.lineWidth = 2/state.view.scale;
+  ctx.fillStyle = colour;
+  ctx.strokeStyle = '#000';
+  for(const p of pts){
+    ctx.beginPath();
+    ctx.arc(p.x,p.y,6/state.view.scale,0,Math.PI*2);
+    ctx.fill(); ctx.stroke();
+  }
+  ctx.restore();
+}
+
+function draw(){
+  const w = canvas.width / devicePixelRatio, h = canvas.height / devicePixelRatio;
+  ctx.setTransform(devicePixelRatio,0,0,devicePixelRatio,0,0);
+  ctx.clearRect(0,0,w,h);
+  ctx.fillStyle = '#0b0b0b';
+  ctx.fillRect(0,0,w,h);
+
+  ctx.save();
+  ctx.translate(state.view.x,state.view.y);
+  ctx.scale(state.view.scale,state.view.scale);
+
+  if(state.leadImg) ctx.drawImage(state.leadImg,0,0);
+
+  if(state.leadPts.length && state.showLeadPts) drawPoints(state.leadPts,'#55d17a');
+
+  if(state.plugImg){
+    ctx.save();
+    ctx.globalAlpha = state.overlay.opacity;
+    ctx.translate(state.overlay.x,state.overlay.y);
+    ctx.rotate(state.overlay.rotation);
+    ctx.scale(state.overlay.scale,state.overlay.scale);
+    ctx.drawImage(state.plugImg,-state.plugImg.width/2,-state.plugImg.height/2);
+    if(state.plugPts.length && state.showPlugPts){
+      ctx.globalAlpha = 1;
+      ctx.translate(-state.plugImg.width/2,-state.plugImg.height/2);
+      drawPoints(state.plugPts,'#5aa7ff');
+    }
+    ctx.restore();
+  }
+
+  ctx.restore();
+
+  if(!state.leadImg && !state.plugImg){
+    ctx.fillStyle = '#aaa';
+    ctx.font = '16px system-ui';
+    ctx.fillText('Load an extension lead photo and a smart plug photo to begin.', 24, 36);
+  }
+}
+</script>
+</body>
+</html>
